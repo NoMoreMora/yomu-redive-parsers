@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.exception.ParseException
+import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
 import org.koitharu.kotatsu.parsers.model.MangaChapter
@@ -43,9 +44,20 @@ internal class MangaK(context: MangaLoaderContext) :
 
 	private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
 
+	// Per-source toggle: when off (default) adult titles are hidden from lists and search.
+	private val showNsfwKey = ConfigKey.ShowNsfwContent(false)
+
+	// Genre slugs/titles that mark a title as adult on MangaKIO.
+	private val nsfwTags = setOf("adult", "mature", "smut", "hentai", "erotica", "adult-content")
+
+	private fun Set<MangaTag>.hasNsfw(): Boolean = any {
+		it.key.lowercase(Locale.US) in nsfwTags || it.title.lowercase(Locale.US) in nsfwTags
+	}
+
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
 		super.onCreateConfig(keys)
 		keys.add(userAgentKey)
+		keys.add(showNsfwKey)
 	}
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -120,13 +132,22 @@ internal class MangaK(context: MangaLoaderContext) :
 			}
 		}
 		val json = webClient.httpGet(url).parseJson()
-		return json.getJSONObject("data").getJSONArray("items").mapJSON { item ->
+		val list = json.getJSONObject("data").getJSONArray("items").mapJSON { item ->
 			item.toManga()
+		}
+		return if (config[showNsfwKey]) {
+			list
+		} else {
+			list.filter { it.contentRating != ContentRating.ADULT }
 		}
 	}
 
 	private fun JSONObject.toManga(): Manga {
 		val relativeUrl = getString("url")
+		val tags = optJSONArray("genres")?.mapJSONNotNullToSet { genre ->
+			val slug = genre.optString("slug").nullIfEmpty() ?: return@mapJSONNotNullToSet null
+			MangaTag(genre.getString("name").toTitleCase(sourceLocale), slug, source)
+		}.orEmpty()
 		return Manga(
 			id = generateUid(getString("id")),
 			title = getString("name"),
@@ -134,12 +155,9 @@ internal class MangaK(context: MangaLoaderContext) :
 			url = getString("id"),
 			publicUrl = "https://$domain$relativeUrl",
 			rating = optDouble("rating", 0.0).toRating(),
-			contentRating = null,
+			contentRating = if (tags.hasNsfw()) ContentRating.ADULT else null,
 			coverUrl = optString("cover").nullIfEmpty(),
-			tags = optJSONArray("genres")?.mapJSONNotNullToSet { genre ->
-				val slug = genre.optString("slug").nullIfEmpty() ?: return@mapJSONNotNullToSet null
-				MangaTag(genre.getString("name").toTitleCase(sourceLocale), slug, source)
-			}.orEmpty(),
+			tags = tags,
 			state = optString("status").toMangaState(),
 			authors = emptySet(),
 			description = optString("summary").nullIfEmpty(),
@@ -164,11 +182,13 @@ internal class MangaK(context: MangaLoaderContext) :
 		val altTitles = json.optString("alt_name").split(";")
 			.mapNotNull { it.trim().nullIfEmpty() }
 			.toSet()
+		val finalTags = tags.ifEmpty { manga.tags }
 		return manga.copy(
 			title = json.optString("name").nullIfEmpty() ?: manga.title,
 			altTitles = altTitles,
 			description = json.optString("summary").nullIfEmpty() ?: manga.description,
-			tags = tags.ifEmpty { manga.tags },
+			tags = finalTags,
+			contentRating = if (finalTags.hasNsfw()) ContentRating.ADULT else manga.contentRating,
 			authors = authors + artists,
 			state = json.optString("status").toMangaState() ?: manga.state,
 			rating = json.optDouble("rating", 0.0).toRating(),

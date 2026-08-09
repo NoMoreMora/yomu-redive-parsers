@@ -22,6 +22,13 @@ public sealed class ConfigKey<T>(
 		override val defaultValue: Boolean,
 	) : ConfigKey<Boolean>("show_suspicious")
 
+	/**
+	 * When false, the parser should hide adult / NSFW manga from lists and search.
+	 */
+	public class ShowNsfwContent(
+		override val defaultValue: Boolean,
+	) : ConfigKey<Boolean>("show_nsfw")
+
 	public class UserAgent(
 		override val defaultValue: String,
 	) : ConfigKey<String>("user_agent")
