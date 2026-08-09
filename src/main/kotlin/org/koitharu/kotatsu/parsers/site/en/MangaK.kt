@@ -43,6 +43,9 @@ internal class MangaK(context: MangaLoaderContext) :
 
 	private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
 
+	// Pulls the chapter number (incl. a fractional part) out of a title like "Chapter 102.5".
+	private val chapterNumberRegex = Regex("""chapter\s*(\d+(?:\.\d+)?)""", RegexOption.IGNORE_CASE)
+
 	// Per-source toggle: when off (default) adult titles are hidden from lists and search.
 	private val showNsfwKey = ConfigKey.ShowNsfwContent(false)
 
@@ -204,13 +207,16 @@ internal class MangaK(context: MangaLoaderContext) :
 	private suspend fun fetchChapters(id: String, cv: Long): List<MangaChapter> {
 		val json = webClient.httpGet("$apiUrl/titles/$id/chapters?cv=$cv").parseJson()
 		val chapters = json.getJSONObject("data").getJSONArray("chapters").mapJSON { it }
-		val total = chapters.size
 		return chapters.mapIndexed { index, chapter ->
+			// The real chapter number lives in the title ("Chapter 102.5") — the API's chapter_number
+			// is always null and its "number" field is just a sequential index. Parse it out so the
+			// chapter badge, ordering and the app's "hide partial chapters" filter work. Specials and
+			// extras that don't match are left unnumbered (0) rather than given a fabricated number.
+			val title = chapter.optString("name").nullIfEmpty()
 			MangaChapter(
 				id = generateUid(chapter.getString("id")),
-				title = chapter.optString("name").nullIfEmpty(),
-				number = chapter.optDouble("chapter_number", Double.NaN).takeUnless { it.isNaN() }?.toFloat()
-					?: (total - index).toFloat(),
+				title = title,
+				number = title?.let { chapterNumberRegex.find(it)?.groupValues?.get(1)?.toFloatOrNull() } ?: 0f,
 				volume = 0,
 				url = chapter.getString("url"),
 				scanlator = null,
