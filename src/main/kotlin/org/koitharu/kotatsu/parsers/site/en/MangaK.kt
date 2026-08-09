@@ -6,7 +6,6 @@ import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.exception.ParseException
-import org.koitharu.kotatsu.parsers.model.ContentRating
 import org.koitharu.kotatsu.parsers.model.ContentType
 import org.koitharu.kotatsu.parsers.model.Manga
 import org.koitharu.kotatsu.parsers.model.MangaChapter
@@ -48,7 +47,9 @@ internal class MangaK(context: MangaLoaderContext) :
 	private val showNsfwKey = ConfigKey.ShowNsfwContent(false)
 
 	// Genre slugs/titles that mark a title as adult on MangaKIO.
-	private val nsfwTags = setOf("adult", "mature", "smut", "hentai", "erotica", "adult-content")
+	private val nsfwTags = setOf(
+		"adult", "adult-content", "mature", "smut", "hentai", "erotica", "ecchi", "doujinshi", "soft-yaoi",
+	)
 
 	private fun Set<MangaTag>.hasNsfw(): Boolean = any {
 		it.key.lowercase(Locale.US) in nsfwTags || it.title.lowercase(Locale.US) in nsfwTags
@@ -135,10 +136,13 @@ internal class MangaK(context: MangaLoaderContext) :
 		val list = json.getJSONObject("data").getJSONArray("items").mapJSON { item ->
 			item.toManga()
 		}
+		// Filter on tags (not contentRating). Marking these as ContentRating.ADULT would make the
+		// app's global "Hide NSFW content" setting strip them even when this toggle is on, so the
+		// per-source toggle would never win. Keeping them un-rated makes this toggle authoritative.
 		return if (config[showNsfwKey]) {
 			list
 		} else {
-			list.filter { it.contentRating != ContentRating.ADULT }
+			list.filterNot { it.tags.hasNsfw() }
 		}
 	}
 
@@ -155,7 +159,8 @@ internal class MangaK(context: MangaLoaderContext) :
 			url = getString("id"),
 			publicUrl = "https://$domain$relativeUrl",
 			rating = optDouble("rating", 0.0).toRating(),
-			contentRating = if (tags.hasNsfw()) ContentRating.ADULT else null,
+			// Left unrated on purpose — the per-source "Show NSFW" toggle governs visibility (see getListPage).
+			contentRating = null,
 			coverUrl = optString("cover").nullIfEmpty(),
 			tags = tags,
 			state = optString("status").toMangaState(),
@@ -188,7 +193,7 @@ internal class MangaK(context: MangaLoaderContext) :
 			altTitles = altTitles,
 			description = json.optString("summary").nullIfEmpty() ?: manga.description,
 			tags = finalTags,
-			contentRating = if (finalTags.hasNsfw()) ContentRating.ADULT else manga.contentRating,
+			contentRating = manga.contentRating,
 			authors = authors + artists,
 			state = json.optString("status").toMangaState() ?: manga.state,
 			rating = json.optDouble("rating", 0.0).toRating(),
