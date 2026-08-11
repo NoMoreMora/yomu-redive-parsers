@@ -24,15 +24,19 @@ import org.koitharu.kotatsu.parsers.model.SortOrder
 import org.koitharu.kotatsu.parsers.site.mmrcms.MmrcmsParser
 import org.koitharu.kotatsu.parsers.util.attrAsRelativeUrl
 import org.koitharu.kotatsu.parsers.util.generateUid
+import org.koitharu.kotatsu.parsers.util.json.getStringOrNull
+import org.koitharu.kotatsu.parsers.util.json.mapJSON
 import org.koitharu.kotatsu.parsers.util.mapChapters
 import org.koitharu.kotatsu.parsers.util.nullIfEmpty
 import org.koitharu.kotatsu.parsers.util.parseHtml
+import org.koitharu.kotatsu.parsers.util.parseJson
 import org.koitharu.kotatsu.parsers.util.parseSafe
 import org.koitharu.kotatsu.parsers.util.requireSrc
 import org.koitharu.kotatsu.parsers.util.src
 import org.koitharu.kotatsu.parsers.util.textOrNull
 import org.koitharu.kotatsu.parsers.util.toAbsoluteUrl
 import org.koitharu.kotatsu.parsers.util.toRelativeUrl
+import org.koitharu.kotatsu.parsers.util.urlEncoded
 import java.text.SimpleDateFormat
 import java.util.EnumSet
 import java.util.Locale
@@ -49,7 +53,9 @@ internal class ReadComicsOnline(context: MangaLoaderContext) :
 	)
 
 	override val filterCapabilities: MangaListFilterCapabilities
-		get() = MangaListFilterCapabilities()
+		get() = MangaListFilterCapabilities(
+			isSearchSupported = true,
+		)
 
 	override suspend fun getFilterOptions(): MangaListFilterOptions = MangaListFilterOptions()
 
@@ -62,7 +68,10 @@ internal class ReadComicsOnline(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		if (!filter.query.isNullOrEmpty() || filter.tags.isNotEmpty() || filter.states.isNotEmpty()) {
+		if (!filter.query.isNullOrEmpty()) {
+			return searchManga(filter.query, page)
+		}
+		if (filter.tags.isNotEmpty() || filter.states.isNotEmpty()) {
 			return emptyList()
 		}
 		val sort = when (order) {
@@ -71,6 +80,33 @@ internal class ReadComicsOnline(context: MangaLoaderContext) :
 		}
 		val doc = webClient.httpGet("https://$domain/comic-list?sort=$sort&page=$page").parseHtml()
 		return doc.select("div.comic-list-layout .grid > .group").mapNotNull(::parseMangaListItem)
+	}
+
+	private suspend fun searchManga(query: String, page: Int): List<Manga> {
+		// The autocomplete endpoint returns its matches in a single JSON response and is not paginated.
+		if (page > 1) {
+			return emptyList()
+		}
+		val url = "https://$domain/search?query=${query.urlEncoded()}"
+		val suggestions = webClient.httpGet(url).parseJson().optJSONArray("suggestions") ?: return emptyList()
+		return suggestions.mapJSON { jo ->
+			val publicUrl = jo.getString("url")
+			val href = publicUrl.toRelativeUrl(domain)
+			Manga(
+				id = generateUid(href),
+				title = jo.getString("value"),
+				altTitles = emptySet(),
+				url = href,
+				publicUrl = publicUrl,
+				rating = RATING_UNKNOWN,
+				contentRating = if (isNsfwSource) ContentRating.ADULT else null,
+				coverUrl = guessCover(href, jo.getStringOrNull("cover")),
+				tags = emptySet(),
+				state = null,
+				authors = emptySet(),
+				source = source,
+			)
+		}
 	}
 
 	private fun parseMangaListItem(element: Element): Manga? {
